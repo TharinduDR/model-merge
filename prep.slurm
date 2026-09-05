@@ -3,14 +3,13 @@
 # NOT a GPU job, so keep it OFF the astro/GPU nodes. Also: HEC compute nodes may lack
 # outbound internet -- if so, run this stage on a login/data-mover node or wherever the
 # datasets can actually be downloaded, and land data/ + tokenizers/ on shared scratch.
-#SBATCH -p serial              # <-- adjust to your CPU queue; GPU docs don't name it
+#SBATCH -p parallel              # <-- adjust to your CPU queue; GPU docs don't name it
 #SBATCH --array=0-0            # one task per language; widen if you add languages
 #SBATCH --mem=64G
 #SBATCH --time=48:00:00
-#SBATCH --cpus-per-task=16
+#SBATCH --cpus-per-task=32
 #SBATCH --output=log/prep_%A_%a.log
-#SBATCH --mail-type=FAIL
-#SBATCH --mail-user=t.ranasinghe@lancaster.ac.uk
+
 
 source /etc/profile
 module add anaconda3/2023.09
