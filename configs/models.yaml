@@ -1,0 +1,62 @@
+# Base models (< 35B) to continue-pretrain SEPARATELY, across four families.
+# loader: how to load in HF.
+#   causal_lm            -> AutoModelForCausalLM (text-only)
+#   image_text_to_text   -> AutoModelForImageTextToText (multimodal; we train the text tower)
+# base: false            -> NOT a pretrained base checkpoint (only instruct/reasoning exists).
+#                           CPT still runs but will erode instruction-tuning; enable knowingly.
+
+models:
+  # ---------- Qwen3.5  (byte-level BPE tokenizer) ----------
+  - repo: Qwen/Qwen3.5-27B          # dense base (you confirmed this is a base checkpoint)
+    params_b: 28
+    loader: causal_lm
+  - repo: Qwen/Qwen3.5-9B-Base
+    params_b: 10
+    loader: causal_lm
+  - repo: Qwen/Qwen3.5-4B-Base
+    params_b: 5
+    loader: causal_lm
+  - repo: Qwen/Qwen3.5-2B-Base
+    params_b: 2
+    loader: causal_lm
+  - repo: Qwen/Qwen3.5-0.8B-Base
+    params_b: 0.9
+    loader: causal_lm
+
+  # ---------- Gemma 4  (SentencePiece 256k, multimodal) ----------
+  - repo: google/gemma-4-31B
+    params_b: 33
+    loader: image_text_to_text
+  - repo: google/gemma-4-26B-A4B
+    params_b: 27
+    loader: image_text_to_text
+  - repo: google/gemma-4-12B
+    params_b: 12
+    loader: image_text_to_text
+  - repo: google/gemma-4-E4B
+    params_b: 8
+    loader: image_text_to_text
+  - repo: google/gemma-4-E2B
+    params_b: 5
+    loader: image_text_to_text
+
+  # ---------- Llama 3.2  (tiktoken BPE 128k) ----------
+  - repo: meta-llama/Llama-3.2-3B
+    params_b: 3
+    loader: causal_lm
+  - repo: meta-llama/Llama-3.2-1B
+    params_b: 1
+    loader: causal_lm
+  # Optional text+vision base (<35B). Uncomment to include:
+  # - repo: meta-llama/Llama-3.2-11B-Vision
+  #   params_b: 11
+  #   loader: image_text_to_text
+
+  # ---------- Ministral 3 (Mistral) ----------
+  # DROPPED: no base Ministral-3 checkpoint exists yet (only Instruct/Reasoning/GGUF/ONNX).
+  # Add rows here (loader: causal_lm) once a Ministral-3-*-Base is published, and widen
+  # the arrays + --array range in cpt.slurm to match.
+
+# Excluded: >35B (Qwen3.5-35B-A3B 36B, 122B, 397B; Llama 90B-Vision; Mistral Small-4/Medium/Large);
+# quantized (FP8/GPTQ/NVFP4/GGUF/ONNX); draft/-assistant/-eagle speculative heads;
+# diffusiongemma (diffusion LM, not causal).
