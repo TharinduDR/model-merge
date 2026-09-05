@@ -27,7 +27,7 @@ def iter_culturax(code, token, streaming=True):
     from datasets import load_dataset
 
     ds = load_dataset("uonlp/CulturaX", code, split="train",
-                      streaming=streaming, token=token, trust_remote_code=True)
+                      streaming=streaming, token=token)
     for r in ds:
         yield {
             "text": r.get("text", ""),
@@ -41,7 +41,7 @@ def iter_madlad(code, token, split="clean", streaming=True):
     from datasets import load_dataset
 
     ds = load_dataset("allenai/madlad-400", code, split=split,
-                      streaming=streaming, token=token, trust_remote_code=True)
+                      streaming=streaming)
     for r in ds:
         yield {
             "text": r.get("text", ""),
