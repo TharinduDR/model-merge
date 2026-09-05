@@ -1,0 +1,38 @@
+# Per-dataset language codes. Add rows as needed.
+# culturax: config name on uonlp/CulturaX
+# hplt:     <lang>_<Script> directory name on data.hplt-project.org (also the .map file stem)
+# madlad:   config name on allenai/madlad-400
+# madlad_split: "clean" (filtered) or "noisy"
+
+sinhala:
+  culturax: si
+  hplt: sin_Sinh
+  madlad: si
+  madlad_split: clean
+
+tamil:
+  culturax: ta
+  hplt: tam_Taml
+  madlad: ta
+  madlad_split: clean
+
+afrikaans:
+  culturax: af
+  hplt: afr_Latn
+  madlad: af
+  madlad_split: clean
+
+nepali:
+  culturax: ne
+  hplt: npi_Deva
+  madlad: ne
+  madlad_split: clean
+
+# NOTE: MADLAD applies extra virama/whitespace fixes for Brahmic scripts
+# (si is in that list), so its Sinhala text is already normalized.
+
+marathi:
+  culturax: mr
+  hplt: mar_Deva
+  madlad: mr
+  madlad_split: clean
