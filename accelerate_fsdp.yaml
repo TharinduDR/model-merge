@@ -1,0 +1,21 @@
+# FSDP full-shard across the 3 L40S GPUs on one node. Used for full-parameter CPT
+# of small models (<=~5B) so optimizer/grad/param state is sharded 3 ways.
+compute_environment: LOCAL_MACHINE
+distributed_type: FSDP
+mixed_precision: bf16
+num_processes: 3
+num_machines: 1
+machine_rank: 0
+gpu_ids: all
+rdzv_backend: static
+same_network: true
+use_cpu: false
+fsdp_config:
+  fsdp_sharding_strategy: FULL_SHARD
+  fsdp_auto_wrap_policy: SIZE_BASED_WRAP     # model-agnostic (no per-family layer class)
+  fsdp_min_num_params: 100000000
+  fsdp_state_dict_type: SHARDED_STATE_DICT   # scalable checkpoints; resume-friendly
+  fsdp_use_orig_params: true
+  fsdp_sync_module_states: true
+  fsdp_cpu_ram_efficient_loading: false      # all ranks load fully, so resize works cleanly
+  fsdp_offload_params: false

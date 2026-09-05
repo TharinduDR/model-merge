@@ -1,0 +1,15 @@
+datasets>=2.19
+pyarrow>=15
+zstandard>=0.22
+requests>=2.31
+datasketch>=1.6
+PyYAML>=6
+transformers>=4.44
+accelerate>=0.33
+torch>=2.3
+# flash-attn is optional; drop attn_implementation="flash_attention_2" if not installed
+sentencepiece>=0.2
+tokenizers>=0.19
+peft>=0.11
+bitsandbytes>=0.43
+huggingface_hub>=0.24

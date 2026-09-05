@@ -1,0 +1,11 @@
+# Data-parallel (DDP) across the 3 L40S GPUs on one node. Used for lora and qlora.
+compute_environment: LOCAL_MACHINE
+distributed_type: MULTI_GPU
+mixed_precision: bf16
+num_processes: 3
+num_machines: 1
+machine_rank: 0
+gpu_ids: all
+rdzv_backend: static
+same_network: true
+use_cpu: false
