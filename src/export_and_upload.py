@@ -58,12 +58,12 @@ def family(base_repo: str) -> str:
     return "qwen"
 
 
-def model_card(repo_id, base, lang, run_dir):
+def model_card(repo_id, base, lang, exp_dir):
     lic, notice = LICENSE[family(base)]
     code = LANG_CODE.get(lang.lower(), lang.lower())
     meta = {}
     mpath = os.path.join(os.path.dirname(run_dir.rstrip("/")), "")  # noqa
-    exp_meta = os.path.join("expanded", lang, base.split("/")[-1], "meta.json")
+    exp_meta = os.path.join(exp_dir, "meta.json")
     if os.path.exists(exp_meta):
         meta = json.load(open(exp_meta))
     added = meta.get("added", "several thousand")
@@ -141,7 +141,7 @@ def main():
     model.push_to_hub(a.repo_id, token=token, safe_serialization=True, max_shard_size="5GB")
     tok.push_to_hub(a.repo_id, token=token)
 
-    card = model_card(a.repo_id, a.base, a.lang, a.run_dir)
+    card = model_card(a.repo_id, a.base, a.lang, a.tokenizer)
     upload_file(path_or_fileobj=card.encode("utf-8"), path_in_repo="README.md",
                 repo_id=a.repo_id, token=token, repo_type="model")
     print(f"Uploaded {a.repo_id}")
