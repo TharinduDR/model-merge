@@ -1,15 +1,17 @@
 #!/usr/bin/env python
 """Merge + deduplicate LOCAL CulturaX, HPLT 3.0, and MADLAD-400 files for one language.
 
-Fully offline (no network). Each source's files are located in this priority order:
+Fully offline. Files are found by scanning for the ACTUAL files, in priority order:
   1. an explicit --<source>-dir flag,
-  2. <data_raw>/<source>_<code>/  (e.g. hplt_sin_Sinh, culturax_si, madlad_si),
-  3. the Hugging Face cache under $HF_HOME  (for CulturaX / MADLAD downloaded with
-     `huggingface-cli download` without --local-dir).
+  2. <data_raw>/<source>_<code>/ if it contains matching files,
+  3. the Hugging Face cache: ALL snapshots of the dataset under $HF_HOME (and ~/.cache),
+     matched case-insensitively -- a stale metadata-only snapshot is skipped and the
+     snapshot that actually holds the data is used.
 HPLT is never on the Hub, so it uses only (1) or (2).
+MADLAD is filtered to the split in languages.yaml (madlad_split, default "clean"),
+so a noisy shard sitting next to the clean one is ignored.
 
-Output: sharded Parquet under <out>/ {text, url, timestamp, source} + an <out>/_SUCCESS
-sentinel written only on clean completion.
+Output: sharded Parquet under <out>/ {text, url, timestamp, source} + <out>/_SUCCESS.
 
 Example:
     python -u src/data_pipeline.py --language sinhala \
@@ -42,45 +44,32 @@ except Exception:
 
 CULTURAX_REPO = "uonlp/CulturaX"
 MADLAD_REPO = "allenai/MADLAD-400"
+CX_PATS = ["*.parquet"]
+HP_PATS = ["*.jsonl.zst", "*.jsonl"]
+MD_PATS = ["*.jsonl.gz", "*.jsonl.zst", "*.jsonl"]
 
 
 def _log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
-# ----------------------------- file discovery -------------------------------
 def _find(dirpath, patterns):
-    files = []
+    out = []
     for pat in patterns:
-        files += glob.glob(os.path.join(dirpath, "**", pat), recursive=True)
+        out += glob.glob(os.path.join(dirpath, "**", pat), recursive=True)
+    return sorted(set(out))
+
+
+def _cache_files(repo, patterns):
+    """Every matching file across ALL cached snapshots of `repo`, case-insensitive."""
+    name = repo.split("/")[-1].lower()
+    homes = {os.environ.get("HF_HOME"), os.path.expanduser("~/.cache/huggingface")}
+    files = []
+    for home in filter(None, homes):
+        for d in glob.glob(os.path.join(home, "**", "datasets--*"), recursive=True):
+            if os.path.isdir(d) and name in os.path.basename(d).lower():
+                files += _find(d, patterns)
     return sorted(set(files))
-
-
-def _hf_cache_snapshot(repo):
-    """Return the newest cached snapshot dir for a dataset repo, offline. None if absent."""
-    try:
-        from huggingface_hub import snapshot_download
-        return snapshot_download(repo, repo_type="dataset", local_files_only=True)
-    except Exception:
-        pass
-    home = os.environ.get("HF_HOME") or os.path.expanduser("~/.cache/huggingface")
-    slug = "datasets--" + repo.replace("/", "--")
-    hits = glob.glob(os.path.join(home, "**", slug, "snapshots", "*"), recursive=True)
-    hits = [h for h in hits if os.path.isdir(h)]
-    return sorted(hits)[-1] if hits else None
-
-
-def _resolve_dir(name, code, override, data_raw, repo):
-    if override:
-        return override
-    conv = os.path.join(data_raw, f"{name}_{code}")
-    if os.path.isdir(conv):
-        return conv
-    if repo:
-        snap = _hf_cache_snapshot(repo)
-        if snap:
-            return snap
-    return conv
 
 
 def _lang_filter(files, code):
@@ -89,6 +78,19 @@ def _lang_filter(files, code):
             or os.path.basename(f).startswith(f"{code}_")
             or f"_{code}_" in os.path.basename(f)]
     return kept or files
+
+
+def _resolve_files(name, code, override, data_raw, repo, patterns, lang_scope):
+    if override:
+        files = _find(override, patterns)
+        return _lang_filter(files, code) if lang_scope else files
+    conv = os.path.join(data_raw, f"{name}_{code}")
+    files = _find(conv, patterns) if os.path.isdir(conv) else []
+    if files:
+        return _lang_filter(files, code) if lang_scope else files
+    if repo:
+        return _lang_filter(_cache_files(repo, patterns), code)
+    return []
 
 
 # ----------------------------- low-level readers ----------------------------
@@ -116,10 +118,8 @@ def _iter_jsonl_lines(path):
 
 
 # ----------------------------- source iterators -----------------------------
-def iter_culturax(dirpath, code):
+def iter_culturax(files):
     import pyarrow.parquet as pq
-    files = _lang_filter(_find(dirpath, ["*.parquet"]), code)
-    _log(f"CulturaX: {len(files)} parquet file(s) under {dirpath}")
     want = ["text", "url", "timestamp", "source"]
     for path in files:
         pf = pq.ParquetFile(path)
@@ -136,26 +136,18 @@ def iter_culturax(dirpath, code):
                 }
 
 
-def iter_hplt(dirpath):
-    files = _find(dirpath, ["*.jsonl.zst", "*.jsonl"])
-    _log(f"HPLT: {len(files)} shard(s) under {dirpath}")
+def iter_hplt(files):
     for path in files:
         for line in _iter_jsonl_lines(path):
             try:
                 r = _loads(line)
             except Exception:
                 continue
-            yield {
-                "text": r.get("text", "") or "",
-                "url": r.get("u", "") or "",
-                "timestamp": str(r.get("ts", "") or ""),
-                "source": "hplt3.0",
-            }
+            yield {"text": r.get("text", "") or "", "url": r.get("u", "") or "",
+                   "timestamp": str(r.get("ts", "") or ""), "source": "hplt3.0"}
 
 
-def iter_madlad(dirpath, code, split="clean"):
-    files = _lang_filter(_find(dirpath, ["*.jsonl.gz", "*.jsonl.zst", "*.jsonl"]), code)
-    _log(f"MADLAD-400: {len(files)} file(s) under {dirpath}")
+def iter_madlad(files, split="clean"):
     for path in files:
         for line in _iter_jsonl_lines(path):
             try:
@@ -207,29 +199,34 @@ def build(language, cfg_path, data_raw, out, overrides, near_dedup, near_thresho
         raise SystemExit(f"'{language}' not in {cfg_path}. Have: {', '.join(cfg)}")
     lc = cfg[key]
     cx_code, hp_code, md_code = lc["culturax"], lc["hplt"], lc["madlad"]
+    md_split = lc.get("madlad_split", "clean")
 
-    cx_dir = _resolve_dir("culturax", cx_code, overrides.get("culturax"), data_raw, CULTURAX_REPO)
-    hp_dir = _resolve_dir("hplt", hp_code, overrides.get("hplt"), data_raw, None)
-    md_dir = _resolve_dir("madlad", md_code, overrides.get("madlad"), data_raw, MADLAD_REPO)
+    cx = _resolve_files("culturax", cx_code, overrides.get("culturax"), data_raw, CULTURAX_REPO, CX_PATS, True)
+    hp = _resolve_files("hplt", hp_code, overrides.get("hplt"), data_raw, None, HP_PATS, False)
+    md = _resolve_files("madlad", md_code, overrides.get("madlad"), data_raw, MADLAD_REPO, MD_PATS, True)
+
+    # Keep only the requested MADLAD split (e.g. clean), dropping noisy shards.
+    md_kept = [f for f in md if md_split in os.path.basename(f)]
+    if md and not md_kept:
+        _log(f"WARNING: MADLAD split '{md_split}' not in any filename; using all {len(md)} file(s).")
+        md_kept = md
+    md = md_kept
 
     _log(f"language={language} out={out} near_dedup={near_dedup}")
-    _log(f"culturax <- {cx_dir}")
-    _log(f"hplt     <- {hp_dir}")
-    _log(f"madlad   <- {md_dir}")
+    _log(f"culturax: {len(cx)} file(s)")
+    _log(f"hplt:     {len(hp)} file(s)")
+    _log(f"madlad:   {len(md)} file(s) (split={md_split})")
+    for tag, fl in (("culturax", cx), ("hplt", hp), ("madlad", md)):
+        if fl:
+            _log(f"  {tag} e.g. {fl[0]}")
 
-    planned = [
-        ("culturax", cx_dir, ["*.parquet"], lambda: iter_culturax(cx_dir, cx_code)),
-        ("hplt", hp_dir, ["*.jsonl.zst", "*.jsonl"], lambda: iter_hplt(hp_dir)),
-        ("madlad", md_dir, ["*.jsonl.gz", "*.jsonl.zst", "*.jsonl"],
-         lambda: iter_madlad(md_dir, md_code, lc.get("madlad_split", "clean"))),
-    ]
-
-    sources = []
-    for name, d, pats, mk in planned:
-        if d and os.path.isdir(d) and _find(d, pats):
-            sources.append((name, mk))
-        else:
-            _log(f"WARNING: no files for {name} at {d} -- skipping it.")
+    sources = [(n, mk) for n, fl, mk in
+               (("culturax", cx, lambda: iter_culturax(cx)),
+                ("hplt", hp, lambda: iter_hplt(hp)),
+                ("madlad", md, lambda: iter_madlad(md, md_split)))
+               if fl]
+    for m in ({"culturax", "hplt", "madlad"} - {n for n, _ in sources}):
+        _log(f"WARNING: no files found for {m}.")
     if 0 < len(sources) < 3:
         _log(f"WARNING: only {len(sources)} of 3 sources found -- corpus will be incomplete.")
     if not sources:
@@ -283,7 +280,6 @@ def main():
     p.add_argument("--shard-docs", type=int, default=200_000)
     p.add_argument("--log-every", type=int, default=10_000)
     a = p.parse_args()
-
     overrides = {"culturax": a.culturax_dir, "hplt": a.hplt_dir, "madlad": a.madlad_dir}
     build(a.language, a.config, a.data_raw, a.out, overrides, a.near_dedup,
           a.near_threshold, a.min_chars, a.shard_docs, a.log_every)
