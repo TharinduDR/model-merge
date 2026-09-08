@@ -178,8 +178,8 @@ def main():
         device_map = {"": local_rank}           # place the 4-bit shard on this rank's GPU
 
     model = load_model(a.model, a.loader, dtype=torch.bfloat16,
-                       attn="flash_attention_2", quantization_config=quant,
-                       device_map=device_map)
+                       attn=os.environ.get("ATTN_IMPL") or None,
+                       quantization_config=quant, device_map=device_map)
 
     if a.tokenizer:
         apply_vocab_expansion(model, tok, a.embed_init)
