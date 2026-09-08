@@ -2,14 +2,13 @@
 """Continued pretraining (CPT) of one base model on the deduped corpus, using an
 expanded (vocabulary-extended) tokenizer.
 
-Supports three memory strategies (chosen by cpt.slurm per model size):
-  full-parameter (default)   -- launch under the FSDP accelerate config.
-  --peft lora                -- LoRA on all linear layers + trainable embeddings, DDP.
-  --peft lora --load-in-4bit -- QLoRA (4-bit base) + LoRA + trainable embeddings, DDP.
+Strategies (chosen by cpt.slurm):
+  full-parameter          -- launch under the FSDP accelerate config, no PEFT.
+  --peft lora             -- LoRA on all linear layers + trainable embeddings.
+  (--load-in-4bit exists but is unused in the current all-bf16 FSDP setup.)
 
-Resume-safe: with --resume auto it continues from the latest checkpoint in --out,
-and writes --done-file when it reaches max-steps, so a 24h-walled array task can be
-re-submitted until it completes.
+Resume-safe: --resume auto continues from the latest checkpoint in --out, and
+writes --done-file at max-steps so a walled array task can be re-submitted.
 """
 from __future__ import annotations
 import argparse
@@ -105,7 +104,7 @@ def apply_vocab_expansion(model, tokenizer, embed_init_path):
             if oe is not None:
                 for row, tid in enumerate(new_ids):
                     oe.weight[tid] = blob["output"][row].to(oe.weight.dtype)
-    print(f"Applied vocab expansion: {len(new_ids)} new rows, vocab={len(tokenizer)}")
+    print(f"Applied vocab expansion: {len(new_ids)} new rows, vocab={len(tokenizer)}", flush=True)
 
 
 def maybe_wrap_peft(model, load_in_4bit, r, alpha, dropout):
@@ -121,7 +120,6 @@ def maybe_wrap_peft(model, load_in_4bit, r, alpha, dropout):
         modules_to_save=["embed_tokens", "lm_head"],
     )
     model = get_peft_model(model, cfg)
-    model.enable_input_require_grads()          # needed for grad-checkpointing + PEFT
     model.print_trainable_parameters()
     return model
 
@@ -175,8 +173,9 @@ def main():
         quant = BitsAndBytesConfig(
             load_in_4bit=True, bnb_4bit_quant_type="nf4",
             bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_use_double_quant=True)
-        device_map = {"": local_rank}           # place the 4-bit shard on this rank's GPU
+        device_map = {"": local_rank}
 
+    # attn implementation is optional; leave unset (SDPA) unless ATTN_IMPL is exported.
     model = load_model(a.model, a.loader, dtype=torch.bfloat16,
                        attn=os.environ.get("ATTN_IMPL") or None,
                        quantization_config=quant, device_map=device_map)
@@ -184,11 +183,14 @@ def main():
     if a.tokenizer:
         apply_vocab_expansion(model, tok, a.embed_init)
 
-    model.config.use_cache = False
+    # --- B: gradient checkpointing ON for every strategy ---
+    model.config.use_cache = False                    # required with checkpointing
     if a.peft == "lora":
         model = maybe_wrap_peft(model, a.load_in_4bit, a.lora_r, a.lora_alpha, a.lora_dropout)
+        model.enable_input_require_grads()            # needed for checkpointing + PEFT
     else:
-        model.gradient_checkpointing_enable()
+        model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs={"use_reentrant": False})
 
     replay_files = glob.glob(os.path.join(a.replay_data, "*.parquet")) if a.replay_data else None
     train_ds = PackedParquet(a.data, tok, a.seq_len, replay_files, a.replay_ratio)
@@ -207,7 +209,8 @@ def main():
         save_steps=a.save_steps,
         save_total_limit=2,
         report_to="none",
-        gradient_checkpointing=(a.peft == "none"),
+        gradient_checkpointing=True,                                  # B
+        gradient_checkpointing_kwargs={"use_reentrant": False},       # B (FSDP+PEFT safe)
         ddp_find_unused_parameters=False,
     )
 
