@@ -127,7 +127,7 @@ def main():
 
     import sys
     sys.path.insert(0, os.path.dirname(__file__))
-    from src.model_utils import load_model, output_embeddings_or_none
+    from model_utils import load_model, output_embeddings_or_none
 
     p = argparse.ArgumentParser()
     p.add_argument("--model", required=True)
