@@ -39,20 +39,16 @@ models=(Qwen/Qwen3.5-27B Qwen/Qwen3.5-9B-Base Qwen/Qwen3.5-4B-Base Qwen/Qwen3.5-
 loaders=(causal_lm causal_lm causal_lm causal_lm causal_lm \
          image_text_to_text image_text_to_text image_text_to_text image_text_to_text image_text_to_text \
          causal_lm causal_lm)
-# big  = bf16 LoRA, FSDP-sharded (was qlora); lora = bf16 LoRA, DDP; full = full-parameter, FSDP
-strategy=(big lora full full full \
-          big big lora lora full \
-          full full)
 is_base=(1 1 1 1 1  1 1 1 1 1  1 1)
 
 n_models=${#models[@]}
 i=$SLURM_ARRAY_TASK_ID
 lang="${langs[$(( i / n_models ))]}"
 mi=$(( i % n_models ))
-model="${models[$mi]}"; loader="${loaders[$mi]}"; strat="${strategy[$mi]}"; base="${is_base[$mi]}"
+model="${models[$mi]}"; loader="${loaders[$mi]}"; base="${is_base[$mi]}"
 name="${model##*/}"
 
-echo "Task $i -> lang=$lang model=$model strat=$strat on $(hostname)"
+echo "Task $i -> lang=$lang model=$model on $(hostname)"
 
 DATA="${DATA_ROOT}/${lang}"
 SPM="${TOK_ROOT}/${lang}.model"
@@ -68,37 +64,30 @@ if [ -f "$DONE" ]; then echo "already complete: $lang $name -- skipping"; exit 0
 if [ ! -f "${EXP}/embed_init.pt" ]; then
     echo ">>> expand vocab: $model"
     python -u src/expand_vocab.py --model "$model" --loader "$loader" \
-        --lang-spm "$SPM" --out "$EXP" --max-new "${MAX_NEW:-16000}" --sample "$DATA"
+        --lang-spm "$SPM" --out "$EXP" --max-new "${MAX_NEW:-32000}" --sample "$DATA"
 fi
 
-# 2) Continued pretraining (resume-safe).
+# 2) FSDP+LoRA needs the decoder layer class named explicitly (PEFT overrides
+#    the size-based wrap policy). Map per model family.
+case "$model" in
+  *Qwen3.5*)  export FSDP_TRANSFORMER_CLS_TO_WRAP=Qwen3_5DecoderLayer ;;
+  *gemma-4*)  export FSDP_TRANSFORMER_CLS_TO_WRAP=Gemma4TextDecoderLayer ;;
+  *Llama-3.2*) export FSDP_TRANSFORMER_CLS_TO_WRAP=LlamaDecoderLayer ;;
+  *) echo "no FSDP layer class mapped for $model"; exit 1 ;;
+esac
+echo "FSDP wrap class: $FSDP_TRANSFORMER_CLS_TO_WRAP"
+
+# 3) Continued pretraining: bf16 base + LoRA, FSDP full-shard across 3 GPUs. Resume-safe.
 notbase=""; [ "$base" = "0" ] && notbase="--not-base"
 port=$(( 29500 + SLURM_ARRAY_TASK_ID ))
 
-common=( --model "$model" --loader "$loader" $notbase \
-         --tokenizer "$EXP" --embed-init "${EXP}/embed_init.pt" \
-         --data "$DATA" --out "$OUT" --resume auto --done-file "$DONE" \
-         --seq-len 4096 --save-steps 500 --max-steps "${MAX_STEPS:-20000}" )
-
-case "$strat" in
-  full)
-    # full-parameter CPT, FSDP full-shard (<=~5B)
-    accelerate launch --config_file configs/accelerate_fsdp.yaml \
-        --num_processes 3 --main_process_port $port \
-        src/continued_pretrain.py "${common[@]}" --micro-batch 2 --grad-accum 16
-    ;;
-  lora)
-    # bf16 base + LoRA, DDP (<=~14B, base fits per GPU)
-    accelerate launch --config_file configs/accelerate_ddp.yaml \
-        --num_processes 3 --main_process_port $port \
-        src/continued_pretrain.py "${common[@]}" --peft lora --micro-batch 2 --grad-accum 16
-    ;;
-  big)
-    # bf16 base + LoRA, FSDP full-shard so a 27B/31B base splits across the 3 GPUs
-    accelerate launch --config_file configs/accelerate_fsdp.yaml \
-        --num_processes 3 --main_process_port $port \
-        src/continued_pretrain.py "${common[@]}" --peft lora --micro-batch 1 --grad-accum 32
-    ;;
-esac
+accelerate launch --config_file configs/accelerate_fsdp.yaml \
+    --num_processes 3 --main_process_port $port \
+    src/continued_pretrain.py \
+        --model "$model" --loader "$loader" $notbase \
+        --tokenizer "$EXP" --embed-init "${EXP}/embed_init.pt" \
+        --data "$DATA" --out "$OUT" --resume auto --done-file "$DONE" \
+        --seq-len 4096 --save-steps 500 --max-steps "${MAX_STEPS:-40000}" \
+        --peft lora --micro-batch 1 --grad-accum 32
 
 echo "training finished for $lang $name; upload with upload_all.sh on a login node."
