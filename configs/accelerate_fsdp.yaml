@@ -12,10 +12,11 @@ same_network: true
 use_cpu: false
 fsdp_config:
   fsdp_sharding_strategy: FULL_SHARD
-  fsdp_auto_wrap_policy: SIZE_BASED_WRAP     # model-agnostic (no per-family layer class)
+  fsdp_auto_wrap_policy: SIZE_BASED_WRAP
   fsdp_min_num_params: 100000000
-  fsdp_state_dict_type: SHARDED_STATE_DICT   # scalable checkpoints; resume-friendly
+  fsdp_state_dict_type: SHARDED_STATE_DICT
   fsdp_use_orig_params: true
   fsdp_sync_module_states: true
-  fsdp_cpu_ram_efficient_loading: false      # all ranks load fully, so resize works cleanly
+  fsdp_cpu_ram_efficient_loading: false
   fsdp_offload_params: false
+  fsdp_mixed_precision: bf16
